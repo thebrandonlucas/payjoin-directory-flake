@@ -59,9 +59,20 @@
             prometheus-node-exporter
           ];
           shellHook = ''
-            # Start node-exporter
-            ${pkgs.prometheus-node-exporter}/bin/node-exporter --web.listen-address=:9100 &
-            NODE_EXPORTER_PID=$!
+            # Create writable directory for Grafana
+            GRAFANA_DATA_DIR="/tmp/grafana-data"
+            mkdir -p "$GRAFANA_DATA_DIR/data" "$GRAFANA_DATA_DIR/log"
+            chmod -R u+w "$GRAFANA_DATA_DIR"
+
+            # Check if node-exporter binary exists
+            if [[ -x "${pkgs.prometheus-node-exporter}/bin/node-exporter" ]]; then
+              echo "Starting node-exporter..."
+              ${pkgs.prometheus-node-exporter}/bin/node-exporter --web.listen-address=:9100 &
+              NODE_EXPORTER_PID=$!
+            else
+              echo "ERROR: node-exporter binary not found or not executable at ${pkgs.prometheus-node-exporter}/bin/node-exporter"
+            fi
+
             # Start Prometheus
             ${pkgs.prometheus}/bin/prometheus --config.file=${pkgs.writeTextFile {
               name = "prometheus.yml";
@@ -71,14 +82,15 @@
                 scrape_configs:
                   - job_name: 'payjoin-directory'
                     static_configs:
-                      - targets: ['localhost:3000']
+                      - targets: ['0.0.0.0:8080']
                   - job_name: 'node-exporter'
                     static_configs:
                       - targets: ['localhost:9100']
               '';
             }} --web.listen-address=:9001 &
             PROMETHEUS_PID=$!
-            # Start Grafana
+
+            # Start Grafana with writable data directory
             ${pkgs.grafana}/bin/grafana-server -homepath ${pkgs.grafana}/share/grafana -config ${pkgs.writeTextFile {
               name = "grafana.ini";
               text = ''
@@ -88,6 +100,9 @@
                 [auth]
                 admin_user = admin
                 admin_password = admin
+                [paths]
+                data = /tmp/grafana-data/data
+                logs = /tmp/grafana-data/log
                 [datasources]
                 [datasources.prometheus]
                 type = prometheus
@@ -98,13 +113,28 @@
               '';
             }} &
             GRAFANA_PID=$!
+
             # Start payjoin-directory
-            ${payjoin-directory}/bin/payjoin-directory --port 3000 &
+            ${payjoin-directory}/bin/payjoin-directory &
             PAYJOIN_PID=$!
+
             echo "Services started:"
-            echo " - Payjoin Directory at http://localhost:3000"
+            echo " - Payjoin Directory at http://localhost:8080"
             echo " - Prometheus at http://localhost:9001"
             echo " - Grafana at http://localhost:3001 (login: admin/admin)"
+
+            # Wait for services to be up (simple health check)
+            sleep 5
+            if ! curl -s http://localhost:9001/-/healthy > /dev/null; then
+              echo "WARNING: Prometheus may not be running correctly"
+            fi
+            if ! curl -s http://localhost:3001/api/health > /dev/null; then
+              echo "WARNING: Grafana may not be running correctly"
+            fi
+            if ! curl -s http://localhost:8080/health > /dev/null; then
+              echo "WARNING: Payjoin-directory may not be running correctly"
+            fi
+
             # Clean up on exit
             trap "kill $NODE_EXPORTER_PID $PROMETHEUS_PID $GRAFANA_PID $PAYJOIN_PID 2>/dev/null" EXIT
             wait

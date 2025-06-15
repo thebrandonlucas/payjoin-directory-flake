@@ -64,13 +64,28 @@
             mkdir -p "$GRAFANA_DATA_DIR/data" "$GRAFANA_DATA_DIR/log"
             chmod -R u+w "$GRAFANA_DATA_DIR"
 
-            # Check if node-exporter binary exists
-            if [[ -x "${pkgs.prometheus-node-exporter}/bin/node-exporter" ]]; then
-              echo "Starting node-exporter..."
-              ${pkgs.prometheus-node-exporter}/bin/node-exporter --web.listen-address=:9100 &
+            # Start node-exporter
+            if [[ -x "${pkgs.prometheus-node-exporter}/bin/node_exporter" ]]; then
+              echo "Starting node_exporter..."
+              ${pkgs.prometheus-node-exporter}/bin/node_exporter --web.listen-address=:9100 >> /tmp/node_exporter.log 2>&1 &
               NODE_EXPORTER_PID=$!
+              # Wait for node_exporter to be up
+              for i in {1..10}; do
+                if curl -s http://localhost:9100/metrics > /dev/null; then
+                  echo "node_exporter is up"
+                  break
+                fi
+                echo "Waiting for node_exporter (attempt $i/10)..."
+                sleep 1
+              done
+              if ! kill -0 $NODE_EXPORTER_PID 2>/dev/null; then
+                echo "ERROR: node_exporter failed to start. Check /tmp/node_exporter.log for details."
+                cat /tmp/node_exporter.log
+                exit 1
+              fi
             else
-              echo "ERROR: node-exporter binary not found or not executable at ${pkgs.prometheus-node-exporter}/bin/node-exporter"
+              echo "ERROR: node_exporter binary not found or not executable at ${pkgs.prometheus-node-exporter}/bin/node_exporter"
+              exit 1
             fi
 
             # Start Prometheus
@@ -83,7 +98,7 @@
                   - job_name: 'payjoin-directory'
                     static_configs:
                       - targets: ['0.0.0.0:8080']
-                  - job_name: 'node-exporter'
+                  - job_name: 'node_exporter'
                     static_configs:
                       - targets: ['localhost:9100']
               '';
